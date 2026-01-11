@@ -64,15 +64,15 @@ RS_Ratio = 100 × (EMA_RS / Rolling_Mean(EMA_RS, m))
 
 Formulas in Text:
 ```
-RS = (Stock_Close / Benchmark_Close) × 100
+RS = Stock_Close / Benchmark_Close
 
-SMA_RS = Mean(RS, window=14)
-StdDev_RS = StdDev(RS, window=14)
+JdK_RS(t) = α × RS(t) + (1-α) × JdK_RS(t-1)
+           where α = 2/(m+1), m = 14 (default)
 
-RS_Ratio = ((RS - SMA_RS) / StdDev_RS) * 10 + 100
+RS_Ratio = 100 + 10 × (JdK_RS - Rolling_Mean(JdK_RS, m)) / Rolling_StdDev(JdK_RS, m)
 ```
 
-**Limitation**: Z-score normalization requires statistical interpretation and is more sensitive to volatility spikes.
+**Note**: Standard JdK uses EMA smoothing of RS followed by z-score normalization, providing a balance between responsiveness and statistical normalization.
 
 ### RS-Momentum Formula
 
@@ -110,16 +110,16 @@ RS_Momentum = 100 + 100 × EMA_ROC
 
 Formulas in Text:
 ```
-ROC(t) = ((RS_Ratio(t) / RS_Ratio(t-period)) - 1) × 100
-        where period = 52 weeks (long-term, includes outdated data)
+ROC(t) = (JdK_RS(t) - JdK_RS(t-k)) / JdK_RS(t-k)
+        where k = 10 (default, ROC lookback period)
 
-SMA_ROC = Mean(ROC, window=14)
-StdDev_ROC = StdDev(ROC, window=14)
+JdK_ROC(t) = α × ROC(t) + (1-α) × JdK_ROC(t-1)
+            where α = 2/(m+1), m = 14
 
-RS_Momentum = ((ROC - SMA_ROC) / StdDev_ROC) * 10 + 100
+RS_Momentum = 100 + 10 × (JdK_ROC - Rolling_Mean(JdK_ROC, m)) / Rolling_StdDev(JdK_ROC, m)
 ```
 
-**Limitation**: z-score bounds values by historical volatility.
+**Note**: Standard JdK calculates momentum from the smoothed RS (JdK_RS) rather than RS_Ratio, then applies z-score normalization for statistical bounds.
 
 ### Why These Enhancements Matter
 
@@ -197,14 +197,24 @@ The application opens at `http://localhost:8501`
 
 #### 2. **Select Securities**
    - **Index Tab**: Analyze sectoral indices (NIFTY IT, NIFTY Bank, etc.)
-   - **Stock Tab**: Analyze individual stocks
+   - **Stock Tab**: Analyze individual stocks or entire sectors
+     - **Individual Selection**: Search and select specific stocks
+     - **Sector Selection**: Use "Select Sector" dropdown to add all major stocks from a sector (e.g., IT, Banking, Finance)
+     - **Sub-Sector Selection**: Select sub-sectors like "Private Banks" or "PSU Banks" to analyze specific segments
    - **ETF Tab**: Analyze ETFs (NIFTYBEES, BANKBEES, etc.)
    - Use search to find securities or select from dropdown
 
 #### 3. **Configure Parameters**
-   - **EMA Window Period (m)**: Default 14 (balances responsiveness vs stability)
-   - **ROC Shift Period (k)**: Default 10 (short-term momentum)
-   - **Tail Count**: Default 8 (historical trail length)
+   - **Computation Method**: Choose between "Enhanced" (default) or "Standard JDK"
+     - **Enhanced**: EMA-based ratio normalization (faster signals, intuitive interpretation)
+     - **Standard JDK**: JdK methodology with EMA smoothing and z-score normalization
+   - **EMA Window Period (m)**: 
+     - Enhanced: Default 14 (fixed for all timeframes)
+     - Standard JDK: Default 14 (Weekly), 20 (Daily), 6 (Monthly)
+   - **ROC Shift Period (k)**: 
+     - Enhanced: Default 10 (Weekly), 20 (Daily), 3 (Monthly)
+     - Standard JDK: Default 10 (Weekly), 20 (Daily), 3 (Monthly)
+   - **Tail Count**: Default 8 (Enhanced) or 4 (Standard JDK) - historical trail length
 
 #### 4. **Generate Chart**
    - Chart auto-generates when securities are selected
@@ -312,13 +322,15 @@ RRG-Chart-Visualization/
 
 ## Key Features
 
+- ✅ **Dual Computation Methods**: Enhanced (EMA-based) and Standard JDK (JdK methodology)
 - ✅ **Enhanced EMA-based formulas** for faster signal detection
 - ✅ **Real-time data** from AngelOne SmartAPI
 - ✅ **Interactive charts** with Plotly (zoom, pan, hover)
 - ✅ **Animation mode** to visualize rotation cycles
 - ✅ **Multi-timeframe** analysis (daily, weekly, monthly)
 - ✅ **Customizable parameters** (EMA span, ROC period, tail count)
-- ✅ **Sector, Stock, and ETF** analysis
+- ✅ **Index, Stock, and ETF** analysis
+- ✅ **Sector-based selection**: Quickly add all major stocks from a sector or sub-sector
 - ✅ **Time period slider** for historical analysis
 
 ---

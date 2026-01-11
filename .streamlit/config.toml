@@ -1,0 +1,5 @@
+[global]
+# Disable widget state duplication warning
+# This prevents UI warning messages about session state values being set for widgets
+disableWidgetStateDuplicationWarning = true
+

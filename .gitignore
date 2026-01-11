@@ -24,8 +24,7 @@ wheels/
 *.egg
 backup/
 
-# Streamlit
-.streamlit/
+
 
 # IDE
 .vscode/

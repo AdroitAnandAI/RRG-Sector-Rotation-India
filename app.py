@@ -12,6 +12,23 @@ import os
 import colorsys
 import time
 from dotenv import load_dotenv
+import warnings
+import logging
+
+# Suppress all Streamlit warnings about Session State API
+# This prevents warning messages from appearing in the UI
+warnings.filterwarnings("ignore", message=".*Session State API.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*was created with a default value but also had its value set via the Session State API.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*created with a default value but also had its value set via the Session State API.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*default value but also had its value set.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*The widget with key.*was created with a default value but also had its value set via the Session State API.*", category=UserWarning)
+
+# Suppress Streamlit session state logging
+logging.getLogger("streamlit.runtime.state.session_state").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.state").setLevel(logging.ERROR)
+
+# Suppress all UserWarnings (Streamlit uses these for widget warnings)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,7 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from loaders.AngelOneLoader import AngelOneLoader
 from rrg_calculator import RRGCalculator
-from sectors import BENCHMARKS
+from sectors import BENCHMARKS, SECTORS, SUB_SECTORS
 from token_fetcher import get_token_from_symbol
 from scrip_master_search import search_indices, search_stocks, search_etfs, get_item_by_symbol, get_stocks, get_etfs, get_indices, get_etfs
 
@@ -281,7 +298,7 @@ def initialize_api_loader():
                     logger.error(f"Failed to initialize API loader: {e}")
                 return None
     
-        return None
+    return None
 
 
 def get_token(symbol):
@@ -639,6 +656,33 @@ def create_rrg_chart_with_animation(items_data, calculator, tail_count=8, colors
     return fig
 
 
+def precompute_charts_for_dates(items_data, calculator, tail_count, colors_map, dates):
+    """
+    Precompute RRG charts for all dates in the given list.
+    Returns a dictionary mapping date (as normalized timestamp) to chart figure.
+    """
+    precomputed = {}
+    for date in dates:
+        # Normalize date for consistent key
+        if isinstance(date, pd.Timestamp):
+            date_key = date.normalize()
+        else:
+            date_key = pd.Timestamp(date).normalize()
+        
+        # Create chart for this date
+        fig = create_rrg_chart(
+            items_data,
+            None,
+            calculator,
+            tail_count=tail_count,
+            colors_map=colors_map,
+            cutoff_date=date_key
+        )
+        precomputed[date_key] = fig
+    
+    return precomputed
+
+
 def create_rrg_chart(items_data, benchmark_data, calculator, tail_count=8, colors_map=None, cutoff_date=None):
     """
     Create RRG chart using Plotly
@@ -892,13 +936,17 @@ def generate_chart():
     # Only add items from the active tab
     if active_tab == "Index":
         for idx in st.session_state.selected_indices:
-            all_selected.append(("Index", idx["symbol"], idx["name"], idx["token"]))
+            token = idx.get("token")
+            all_selected.append(("Index", idx["symbol"], idx["name"], token))
     elif active_tab == "Stock":
         for stock in st.session_state.selected_stocks:
-            all_selected.append(("Stock", stock["symbol"], stock["name"], stock["token"]))
+            # Use .get() to handle missing token key gracefully
+            token = stock.get("token")
+            all_selected.append(("Stock", stock["symbol"], stock["name"], token))
     elif active_tab == "ETF":
         for etf in st.session_state.selected_etfs:
-            all_selected.append(("ETF", etf["symbol"], etf["name"], etf["token"]))
+            token = etf.get("token")
+            all_selected.append(("ETF", etf["symbol"], etf["name"], token))
     
     # Always return a chart (even if no items selected, will show quadrants only)
     # Initialize items_data as empty dict if no selections
@@ -906,30 +954,43 @@ def generate_chart():
     calculator = None
     benchmark_df = None
     
+    # Get computation method
+    use_standard_jdk = st.session_state.get('computation_method', 'Enhanced') == 'Standard JDK'
+    timeframe = st.session_state.get('timeframe', 'weekly')
+    
+    # For Standard JDK, period is used for ROC calculation (taken from roc_shift slider)
+    # For Enhanced, roc_shift is used for ROC calculation
+    roc_shift = st.session_state.get('roc_shift', 10)
+    if use_standard_jdk:
+        # Standard JDK uses period for ROC calculation
+        standard_period = roc_shift
+    else:
+        # Enhanced uses roc_shift for ROC calculation
+        standard_period = st.session_state.get('roc_period', 20)  # Deprecated, kept for compatibility
+    
     if not all_selected:
         # Return empty chart with just quadrants
         calculator = RRGCalculator(
             window=st.session_state.get('window', 14),
-            period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+            period=standard_period,
             ema_span=14,  # Fixed in formula
-            roc_shift=st.session_state.get('roc_shift', 10),
-            ema_roc_span=st.session_state.get('ema_roc_span', 14)
+            roc_shift=roc_shift,
+            ema_roc_span=st.session_state.get('ema_roc_span', 14),
+            use_standard_jdk=use_standard_jdk
         )
         fig = create_rrg_chart(items_data, None, calculator, tail_count=st.session_state.get('tail_count', 8))
         return fig, items_data, calculator
     
-    # Check if loader needs to be reinitialized (timeframe or period changed)
+    # Check if loader needs to be reinitialized (timeframe changed)
     current_timeframe = st.session_state.get('timeframe', 'daily')
-    current_period = st.session_state.get('period', 200)
     
     needs_reinit = False
     if st.session_state.loader is None:
         needs_reinit = True
     else:
-        # Check if timeframe or period changed
+        # Check if timeframe changed
         loader_tf = getattr(st.session_state.loader, 'tf', None)
-        loader_period = getattr(st.session_state.loader, 'period', None)
-        if loader_tf != current_timeframe or loader_period != current_period:
+        if loader_tf != current_timeframe:
             needs_reinit = True
     
     # Reinitialize loader if needed
@@ -947,10 +1008,11 @@ def generate_chart():
             # Return empty chart if loader fails
             calculator = RRGCalculator(
                 window=st.session_state.get('window', 14),  # Deprecated, kept for compatibility
-                period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+                period=standard_period,
                 ema_span=14,  # Deprecated, kept for compatibility
-                roc_shift=st.session_state.get('roc_shift', 10),
-                ema_roc_span=st.session_state.get('ema_roc_span', 14)  # m: used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span
+                roc_shift=roc_shift,
+                ema_roc_span=st.session_state.get('ema_roc_span', 14),  # m: used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span
+                use_standard_jdk=use_standard_jdk
             )
             fig = create_rrg_chart({}, None, calculator, tail_count=st.session_state.get('tail_count', 8))
             return fig, {}, calculator
@@ -963,14 +1025,15 @@ def generate_chart():
         # Return empty chart if token not found
         calculator = RRGCalculator(
             window=st.session_state.get('window', 14),
-            period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+            period=standard_period,
             ema_span=14,  # Fixed in formula
-            roc_shift=st.session_state.get('roc_shift', 10),
-            ema_roc_span=st.session_state.get('ema_roc_span', 14)
+            roc_shift=roc_shift,
+            ema_roc_span=st.session_state.get('ema_roc_span', 14),
+            use_standard_jdk=use_standard_jdk
         )
         fig = create_rrg_chart({}, None, calculator, tail_count=st.session_state.get('tail_count', 8))
         return fig, {}, calculator
-    
+                
     # Get benchmark data
     try:
         benchmark_df = get_stock_data(st.session_state.loader, benchmark_symbol, benchmark_token)
@@ -978,10 +1041,11 @@ def generate_chart():
             # Return empty chart instead of None
             calculator = RRGCalculator(
                 window=st.session_state.get('window', 14),  # Deprecated, kept for compatibility
-                period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+                period=standard_period,
                 ema_span=14,  # Deprecated, kept for compatibility
-                roc_shift=st.session_state.get('roc_shift', 10),
-                ema_roc_span=st.session_state.get('ema_roc_span', 14)  # m: used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span
+                roc_shift=roc_shift,
+                ema_roc_span=st.session_state.get('ema_roc_span', 14),  # m: used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span
+                use_standard_jdk=use_standard_jdk
             )
             fig = create_rrg_chart({}, None, calculator, tail_count=st.session_state.get('tail_count', 8))
             return fig, {}, calculator
@@ -989,23 +1053,25 @@ def generate_chart():
         # Return empty chart instead of None
         calculator = RRGCalculator(
             window=st.session_state.get('window', 14),
-            period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+            period=standard_period,
             ema_span=14,  # Fixed in formula
-            roc_shift=st.session_state.get('roc_shift', 10),
-            ema_roc_span=st.session_state.get('ema_roc_span', 14)
+            roc_shift=roc_shift,
+            ema_roc_span=st.session_state.get('ema_roc_span', 14),
+            use_standard_jdk=use_standard_jdk
         )
         fig = create_rrg_chart({}, None, calculator, tail_count=st.session_state.get('tail_count', 8))
         return fig, {}, calculator
-    
+                
     benchmark_closes = benchmark_df['Close']
-    
+                
     # Initialize calculator
     calculator = RRGCalculator(
         window=st.session_state.get('window', 14),
-        period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+        period=standard_period,
         ema_span=14,  # Fixed in formula
-        roc_shift=st.session_state.get('roc_shift', 10),
-        ema_roc_span=st.session_state.get('ema_roc_span', 14)
+        roc_shift=roc_shift,
+        ema_roc_span=st.session_state.get('ema_roc_span', 14),
+        use_standard_jdk=use_standard_jdk
     )
     
     # Process each selected item (only from active tab - already filtered)
@@ -1032,9 +1098,13 @@ def generate_chart():
         # Align indices
         common_dates = item_closes.index.intersection(benchmark_processed.index)
         window = st.session_state.get('window', 14)
-        roc_period = st.session_state.get('roc_period', 20)
+        # For Standard JDK, use period; for Enhanced, use roc_shift
+        if use_standard_jdk:
+            min_period = standard_period
+        else:
+            min_period = roc_shift
         
-        if len(common_dates) < window + roc_period:
+        if len(common_dates) < window + min_period:
             continue
         
         item_aligned = item_closes.loc[common_dates]
@@ -1109,7 +1179,7 @@ def main():
         # Large heading for left pane
         st.markdown("<h1 style='font-size: 1.8em; margin-top: 0; margin-bottom: 0.8em; font-weight: bold;'>RRG Chart: Sectoral Rotation Analysis</h1>", unsafe_allow_html=True)
         
-        st.markdown("<h4 style='font-size: 0.95em; margin-bottom: 0.3em;'>⚙️ Chart Settings</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size: 1.05em; margin-bottom: 0.3em;'>⚙️ Chart Settings</h4>", unsafe_allow_html=True)
         
         # Benchmark Selection
         benchmark_options = list(BENCHMARKS.keys())
@@ -1128,55 +1198,166 @@ def main():
         )
         # Convert display value to lowercase for internal use and store in session_state
         timeframe = timeframe_display.lower() if timeframe_display else "weekly"
+        previous_timeframe = st.session_state.get('previous_timeframe')
         st.session_state.timeframe = timeframe
+        
+        # Store timeframe change status before updating previous_timeframe
+        timeframe_changed_flag = previous_timeframe is not None and previous_timeframe != timeframe
+        st.session_state.timeframe_changed = timeframe_changed_flag
+        
         # Clear loader when timeframe changes
-        if st.session_state.get('previous_timeframe') != timeframe:
+        if timeframe_changed_flag:
             st.session_state.loader = None
             st.session_state.previous_timeframe = timeframe
         
+        # Determine default tail count based on computation method
+        if 'computation_method' not in st.session_state:
+            st.session_state.computation_method = "Enhanced"
+        
+        if st.session_state.computation_method == "Standard JDK":
+            default_tail_count = 4
+        else:  # Enhanced
+            default_tail_count = 8
+        
+        # Tail Count slider - use session state value if exists, otherwise use default
+        # Don't set in session state before slider to avoid warning
+        tail_count_value = st.session_state.get('tail_count', default_tail_count)
         tail_count = st.slider(
             "Tail Count",
             min_value=2,
             max_value=10,
-            value=8,
+            value=tail_count_value,
             step=1,
             key="tail_count"
         )
         
-        period = st.slider(
-            "Data Window",
-            min_value=50,
-            max_value=300,
-            value=200,
-            step=10,
-            key="period"
+        # RRG Calculation Settings
+        st.markdown("<h4 style='font-size: 1.05em; margin-bottom: 0.3em;'>⚙️ RRG Settings</h4>", unsafe_allow_html=True)
+        
+        # RRG Computation Method Selection - moved under RRG Settings
+        # Use CSS to make radio buttons horizontal and prevent text wrapping
+        st.markdown("""
+        <style>
+        div[data-testid="stRadio"] > div {
+            flex-direction: row;
+            display: flex;
+            gap: 20px;
+        }
+        div[data-testid="stRadio"] > div > label {
+            flex: 0 0 auto;
+            white-space: nowrap;
+            min-width: fit-content;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        computation_method = st.radio(
+            "Computation Method",
+            ["Enhanced", "Standard JDK"],
+            index=0 if st.session_state.computation_method == "Enhanced" else 1,
+            key="computation_method"
         )
         
-        # RRG Calculation Settings
-        st.markdown("<h4 style='font-size: 0.95em; margin-bottom: 0.3em;'>⚙️ RRG Settings</h4>", unsafe_allow_html=True)
+        # Clear cache only when computation method actually changes (not on first load)
+        previous_computation_method = st.session_state.get('previous_computation_method')
+        if previous_computation_method is not None and previous_computation_method != computation_method:
+            # Only clear cache if method actually changed (not on first initialization)
+            st.session_state.chart_cache_key = None
+            st.session_state.cached_chart = None
+            st.session_state.cached_items_data = None
+            st.session_state.cached_calculator = None
+            # Clear precomputed charts cache when method changes
+            # Get active_tab from session state
+            active_tab_for_precompute = st.session_state.get('active_tab', 'Index')
+            precomputed_charts_key = f"precomputed_charts_{active_tab_for_precompute.lower()}"
+            if precomputed_charts_key in st.session_state:
+                del st.session_state[precomputed_charts_key]
+            # Note: We don't update tail_count here because the widget is already instantiated
+            # The user can manually change the tail count if needed
+            # The default tail count is set when the slider is created based on computation_method
+        # Always update previous_computation_method to current value
+        st.session_state.previous_computation_method = computation_method
         
-        # Default values: m=14, k=10 for weekly RRG
-        default_roc_shift = 10
-        default_ema_roc_span = 14
+        # Determine if Standard JDK is selected
+        use_standard_jdk = computation_method == 'Standard JDK'
+        
+        # Set default values based on timeframe and computation method
+        if use_standard_jdk:
+            # Standard JDK defaults: m and k based on timeframe
+            if timeframe == 'weekly':
+                default_ema_roc_span = 14  # m
+                default_roc_shift = 10  # k
+            elif timeframe == 'daily':
+                default_ema_roc_span = 20  # m
+                default_roc_shift = 20  # k
+            else:  # monthly
+                default_ema_roc_span = 6  # m
+                default_roc_shift = 3  # k
+        else:
+            # Enhanced defaults
+            # m is fixed at 14 for all timeframes
+            default_ema_roc_span = 14
+            
+            # k varies by timeframe: 20 (Daily), 10 (Weekly), 3 (Monthly)
+            if timeframe == 'weekly':
+                default_roc_shift = 10
+            elif timeframe == 'daily':
+                default_roc_shift = 20
+            else:  # monthly
+                default_roc_shift = 3
+        
+        # For both Enhanced and Standard JDK, always update session state based on current timeframe
+        # This ensures sliders reflect the correct defaults when timeframe changes
+        # Check if timeframe or computation method changed
+        timeframe_changed = st.session_state.get('timeframe_changed', False)
+        computation_method_changed = previous_computation_method is not None and previous_computation_method != computation_method
+        
+        # Always update session state to match defaults for current timeframe and computation method
+        # For Enhanced: m stays at 14, but k changes with timeframe (20/10/3)
+        # For Standard JDK: both m and k change with timeframe
+        if use_standard_jdk:
+            # For Standard JDK, update when timeframe or computation method changes
+            if timeframe_changed or computation_method_changed:
+                st.session_state.ema_roc_span = default_ema_roc_span
+                st.session_state.roc_shift = default_roc_shift
+            else:
+                # Initialize if not exists
+                if 'ema_roc_span' not in st.session_state:
+                    st.session_state.ema_roc_span = default_ema_roc_span
+                if 'roc_shift' not in st.session_state:
+                    st.session_state.roc_shift = default_roc_shift
+        else:
+            # For Enhanced mode, always update to ensure k matches current timeframe
+            # m is always 14, k changes with timeframe (20/10/3)
+            st.session_state.ema_roc_span = default_ema_roc_span  # Always 14 for Enhanced
+            st.session_state.roc_shift = default_roc_shift  # Changes with timeframe
+        
+        # Reset timeframe_changed flag after using it
+        st.session_state.timeframe_changed = False
+        
+        # Get values from session state - sliders with key parameter will use these values
+        # The slider widget will read from session state when key is provided
+        ema_roc_span_value = st.session_state.get('ema_roc_span', default_ema_roc_span)
+        roc_shift_value = st.session_state.get('roc_shift', default_roc_shift)
         
         ema_roc_span = st.slider(
             "EMA Window Period (m)",
             min_value=5,
             max_value=52,
-            value=default_ema_roc_span,
+            value=ema_roc_span_value,
             step=1,
             key="ema_roc_span",
-            help="Window period for EMA calculations: Used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span"
+            help="Window period: For Enhanced (EMA span), For Standard JDK (RS EMA period m)"
         )
         
         roc_shift = st.slider(
             "ROC Shift Period (k)",
             min_value=5,
             max_value=52,
-            value=default_roc_shift,
+            value=roc_shift_value,
             step=1,
             key="roc_shift",
-            help="Shift period for ROC calculation: (RS_Ratio - RS_Ratio.shift(k)) / RS_Ratio.shift(k)"
+            help="Period for ROC: Enhanced uses as shift(k), Standard JDK uses as ROC lookback period (k)"
         )
         
         # Keep window for backward compatibility (deprecated, now uses ema_roc_span)
@@ -1229,22 +1410,21 @@ def main():
             else:  # ETF
                 selected_items = tuple(sorted([etf['symbol'] for etf in st.session_state.selected_etfs]))
             
-            # Get cutoff_date from session state for cache key
-            cutoff_date_key = f"cutoff_date_{active_tab.lower()}"
-            cutoff_date = st.session_state.get(cutoff_date_key, None)
+            # NOTE: cutoff_date is NOT included in cache key
+            # We use precomputed charts for different dates, so cutoff_date changes don't trigger regeneration
+            # cutoff_date only affects which precomputed chart to display
             
             return (
                 active_tab,
                 selected_items,
                 st.session_state.get('benchmark_name', 'NIFTY 50'),
                 st.session_state.get('timeframe', 'weekly'),
-                st.session_state.get('period', 200),
                 st.session_state.get('tail_count', 8),
                 st.session_state.get('window', 14),
-                st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
                 st.session_state.get('roc_shift', 10),
                 st.session_state.get('ema_roc_span', 14),
-                cutoff_date  # Include cutoff_date in cache key
+                st.session_state.get('computation_method', 'Enhanced')  # Include computation method in cache key
+                # cutoff_date is NOT included - we use precomputed charts for different dates
             )
         
         current_cache_key = get_chart_cache_key()
@@ -1353,13 +1533,31 @@ def main():
                 st.session_state.available_dates = extracted_dates
                 available_dates = extracted_dates
         
-        # Enable Animation checkbox - always visible, state per tab
-        use_animation = st.checkbox("Enable Animation", value=st.session_state[animation_key], key=animation_key)
-        
         # Initialize cutoff_date key for this tab
         cutoff_date_key = f"cutoff_date_{active_tab.lower()}"
         if cutoff_date_key not in st.session_state:
             st.session_state[cutoff_date_key] = None
+        
+        # Get per-tab animation state BEFORE chart creation
+        active_tab_for_animation = st.session_state.get('active_tab', 'Index')
+        if active_tab_for_animation == "Index":
+            animation_key = "use_animation_index"
+        elif active_tab_for_animation == "Stock":
+            animation_key = "use_animation_stock"
+        else:  # ETF
+            animation_key = "use_animation_etf"
+        
+        # Initialize animation state for this tab if not exists
+        if animation_key not in st.session_state:
+            st.session_state[animation_key] = False
+        
+        # Get use_animation value BEFORE chart creation (needed for chart type decision)
+        # Create the checkbox here so it's available for chart creation decision
+        use_animation = st.checkbox("Enable Animation", value=st.session_state.get(animation_key, False), key=animation_key)
+        
+        # Generate colors map early so it's available for precomputation
+        colors = generate_unique_colors(len(items_data)) if items_data else []
+        colors_map = {symbol: colors[i] for i, symbol in enumerate(items_data.keys())} if items_data else {}
         
         # Time Period slider - positioned BEFORE chart generation to update cutoff_date first
         cutoff_date = None
@@ -1406,6 +1604,35 @@ def main():
                 # Create date labels for slider
                 date_labels = [d.strftime('%d %b %Y') for d in filtered_dates]
                 
+                # Precompute charts for all dates if not already done
+                precomputed_charts_key = f"precomputed_charts_{active_tab.lower()}"
+                precomputed_cache_key = f"precomputed_cache_key_{active_tab.lower()}"
+                
+                # Check if we need to precompute (items_data changed, or not yet computed)
+                current_precompute_key = (
+                    tuple(sorted(items_data.keys())) if items_data else (),
+                    st.session_state.get('tail_count', 8),
+                    st.session_state.get('computation_method', 'Enhanced')
+                )
+                
+                needs_precompute = (
+                    precomputed_charts_key not in st.session_state or
+                    st.session_state.get(precomputed_cache_key) != current_precompute_key
+                )
+                
+                # Store precomputation task - will be done after chart is displayed (non-blocking)
+                if needs_precompute and items_data and calculator:
+                    st.session_state['_pending_precompute'] = {
+                        'items_data': items_data,
+                        'calculator': calculator,
+                        'tail_count': st.session_state.get('tail_count', 8),
+                        'colors_map': colors_map,
+                        'filtered_dates': filtered_dates,
+                        'precomputed_charts_key': precomputed_charts_key,
+                        'precomputed_cache_key': precomputed_cache_key,
+                        'current_precompute_key': current_precompute_key
+                    }
+                
                 # Time Period slider
                 selected_index = st.select_slider(
                     "Time Period",
@@ -1426,20 +1653,12 @@ def main():
                         selected_date = pd.Timestamp(selected_date).normalize()
                     st.session_state[cutoff_date_key] = selected_date
                     cutoff_date = selected_date
-                    
-                    # Clear cache to force chart regeneration with new cutoff_date
-                    st.session_state.chart_cache_key = None
-                    st.session_state.cached_chart = None
                 else:
                     # Use stored cutoff_date if slider index is invalid
                     cutoff_date = st.session_state.get(cutoff_date_key, None)
         else:
             # No slider available, use stored cutoff_date or None
             cutoff_date = st.session_state.get(cutoff_date_key, None)
-        
-        # Generate colors map
-        colors = generate_unique_colors(len(items_data)) if items_data else []
-        colors_map = {symbol: colors[i] for i, symbol in enumerate(items_data.keys())} if items_data else {}
         
         # Create chart based on animation state
         if available_dates and items_data and use_animation:
@@ -1480,14 +1699,39 @@ def main():
                 )
         else:
             # Create static chart with cutoff date
-            fig = create_rrg_chart(
-                items_data,
-                None,
-                calculator,
-                tail_count=st.session_state.get('tail_count', 8),
-                colors_map=colors_map,
-                cutoff_date=cutoff_date
-            )
+            # Try to use precomputed chart if available
+            precomputed_charts_key = f"precomputed_charts_{active_tab.lower()}"
+            if cutoff_date and precomputed_charts_key in st.session_state:
+                # Normalize cutoff_date for lookup
+                if isinstance(cutoff_date, pd.Timestamp):
+                    cutoff_key = cutoff_date.normalize()
+                else:
+                    cutoff_key = pd.Timestamp(cutoff_date).normalize()
+                
+                precomputed_charts = st.session_state[precomputed_charts_key]
+                if cutoff_key in precomputed_charts:
+                    # Use precomputed chart - instant update!
+                    fig = precomputed_charts[cutoff_key]
+                else:
+                    # Fallback to generating chart if precomputed not available
+                    fig = create_rrg_chart(
+                        items_data,
+                        None,
+                        calculator,
+                        tail_count=st.session_state.get('tail_count', 8),
+                        colors_map=colors_map,
+                        cutoff_date=cutoff_date
+                    )
+            else:
+                # No precomputed charts available, generate normally
+                fig = create_rrg_chart(
+                    items_data,
+                    None,
+                    calculator,
+                    tail_count=st.session_state.get('tail_count', 8),
+                    colors_map=colors_map,
+                    cutoff_date=cutoff_date
+                )
         
         # Always display chart (even if empty, shows quadrants)
         if fig:
@@ -1497,14 +1741,51 @@ def main():
             st.session_state.current_items_data = items_data
             st.session_state.current_calculator = calculator
         
+        # Note: Enable Animation checkbox is already created above (before chart creation)
+        # It's displayed there to ensure it's always visible and available for chart type decision
+        
+        # Do precomputation after chart is displayed (non-blocking for initial display)
+        if '_pending_precompute' in st.session_state:
+            precompute_task = st.session_state['_pending_precompute']
+            # Only precompute if we still need it (cache key hasn't changed)
+            precomputed_charts_key = precompute_task['precomputed_charts_key']
+            precomputed_cache_key = precompute_task['precomputed_cache_key']
+            current_precompute_key = precompute_task['current_precompute_key']
+            
+            if (precomputed_charts_key not in st.session_state or
+                st.session_state.get(precomputed_cache_key) != current_precompute_key):
+                # Precompute charts for all dates (this happens after chart is displayed)
+                with st.spinner("Precomputing charts for all time periods..."):
+                    precomputed_charts = precompute_charts_for_dates(
+                        precompute_task['items_data'],
+                        precompute_task['calculator'],
+                        precompute_task['tail_count'],
+                        precompute_task['colors_map'],
+                        precompute_task['filtered_dates']
+                    )
+                    st.session_state[precomputed_charts_key] = precomputed_charts
+                    st.session_state[precomputed_cache_key] = current_precompute_key
+            
+            # Clear the pending task
+            del st.session_state['_pending_precompute']
+        
         # Fallback: create empty chart with quadrants if no fig
         if not fig:
+            # Get computation method for fallback calculator
+            use_standard_jdk_fallback = st.session_state.get('computation_method', 'Enhanced') == 'Standard JDK'
+            roc_shift_fallback = st.session_state.get('roc_shift', 10)
+            if use_standard_jdk_fallback:
+                standard_period_fallback = roc_shift_fallback
+            else:
+                standard_period_fallback = st.session_state.get('roc_period', 20)  # Deprecated, kept for compatibility
+            
             calculator = RRGCalculator(
                 window=st.session_state.get('window', 14),  # Deprecated, kept for compatibility
-                period=st.session_state.get('roc_period', 20),  # Deprecated, kept for compatibility
+                period=standard_period_fallback,
                 ema_span=14,  # Deprecated, kept for compatibility
-                roc_shift=st.session_state.get('roc_shift', 10),
-                ema_roc_span=st.session_state.get('ema_roc_span', 14)  # m: used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span
+                roc_shift=roc_shift_fallback,
+                ema_roc_span=st.session_state.get('ema_roc_span', 14),  # m: used for EMA_RS span, RS_Ratio rolling mean, and EMA_ROC span
+                use_standard_jdk=use_standard_jdk_fallback
             )
             fig = create_rrg_chart({}, None, calculator, tail_count=st.session_state.get('tail_count', 8))
             with st.session_state.chart_placeholder.container():
@@ -1627,6 +1908,24 @@ def main():
         
         elif st.session_state.active_tab == "Stock":
             search_query = st.text_input("Search Stocks", key="search_stock", placeholder="e.g., HDFCBANK, RELIANCE, TCS")
+            
+            # Tip text below Search Stocks
+            st.info("💡 Enter a search term to find stocks")
+            
+            # Sector Selection Combo Box - always displayed, comes after tip text
+            # Get all sectors and sub-sectors
+            all_sectors = list(SECTORS.keys())
+            all_sub_sectors = list(SUB_SECTORS.keys()) if SUB_SECTORS else []
+            sector_options = sorted(all_sectors + all_sub_sectors)
+            
+            selected_sector = st.selectbox(
+                "Select Sector",
+                options=[""] + sector_options,
+                key="sector_selectbox",
+                format_func=lambda x: f"📁 {x}" if x else "Select a sector..."
+            )
+            
+            # Search query handling with Select Stocks multiselect - comes after Select Sector
             if search_query and len(search_query.strip()) >= 1:  # Require at least 1 character
                 try:
                     with st.spinner("Searching stocks..."):
@@ -1642,13 +1941,28 @@ def main():
                             key="multiselect_stocks_search"
                         )
                         
-                        # Update selected stocks
+                        # Update selected stocks - add to existing list (don't clear)
+                        # Silently add to Selected Items without showing additional UI elements
                         if selected_stock_keys:
+                            stocks_added_from_search = False
                             for key in selected_stock_keys:
                                 stock_item = stock_options[key]
                                 if not any(x['symbol'] == stock_item['symbol'] for x in st.session_state.selected_stocks):
                                     st.session_state.selected_stocks.append(stock_item)
-                                    st.rerun()
+                                    stocks_added_from_search = True
+                            
+                            # Clear cache to force chart regeneration when stocks are added
+                            if stocks_added_from_search:
+                                st.session_state.chart_cache_key = None
+                                st.session_state.cached_chart = None
+                                st.session_state.cached_items_data = None
+                                st.session_state.cached_calculator = None
+                                # Clear precomputed charts cache
+                                active_tab_for_search = st.session_state.get('active_tab', 'Stock')
+                                precomputed_charts_key = f"precomputed_charts_{active_tab_for_search.lower()}"
+                                if precomputed_charts_key in st.session_state:
+                                    del st.session_state[precomputed_charts_key]
+                                st.rerun()
                     else:
                         # Provide helpful message and try to diagnose
                         st.warning(f"No stocks found for '{search_query}'")
@@ -1688,8 +2002,90 @@ def main():
                     st.code(traceback.format_exc())
             elif search_query and len(search_query.strip()) == 0:
                 st.info("Please enter a search term.")
-            else:
-                st.info("Enter a search term to find stocks (e.g., HDFCBANK, RELIANCE, TCS).")
+            
+            # Handle sector selection - selected_sector is already defined above (always displayed)
+            if selected_sector and selected_sector != "":
+                # Check if this sector was just processed to avoid duplicate processing
+                last_processed_sector = st.session_state.get('last_processed_sector', None)
+                if selected_sector != last_processed_sector:
+                    with st.spinner(f"Adding stocks from {selected_sector}..."):
+                        # Clear existing stocks first when a sector is selected
+                        st.session_state.selected_stocks = []
+                        
+                        stocks_added = 0
+                        sector_symbols = []
+                        
+                        # Check if it's a main sector or sub-sector
+                        if selected_sector in SECTORS:
+                            sector_symbols = SECTORS[selected_sector]
+                        elif SUB_SECTORS and selected_sector in SUB_SECTORS:
+                            sector_symbols = SUB_SECTORS[selected_sector]
+                        
+                        # Add stocks from the sector - create stock items directly from symbols
+                        for symbol in sector_symbols:
+                            # Try to get stock info from scrip master first
+                            # Try with original symbol format first (with -EQ if present)
+                            stock_item = get_item_by_symbol(symbol)
+                            
+                            # If not found with original format, try without -EQ suffix
+                            if not stock_item and symbol.endswith('-EQ'):
+                                symbol_clean = symbol.replace('-EQ', '')
+                                stock_item = get_item_by_symbol(symbol_clean)
+                            
+                            # If still not found, create a basic stock item from the symbol
+                            if not stock_item:
+                                # Try to get token using original symbol format first
+                                token = get_token(symbol)
+                                # If token not found, try without -EQ
+                                if not token and symbol.endswith('-EQ'):
+                                    symbol_clean = symbol.replace('-EQ', '')
+                                    token = get_token(symbol_clean)
+                                
+                                # Use the original symbol format (with -EQ if it was there)
+                                # This ensures it matches the scrip master format
+                                stock_item = {
+                                    'symbol': symbol,  # Keep original format (e.g., "HDFCBANK-EQ")
+                                    'name': symbol.replace('-EQ', '').replace('-', ' ').title(),
+                                    'exch_seg': 'NSE',
+                                    'instrumenttype': 'EQ',
+                                    'token': token if token else None
+                                }
+                            else:
+                                # Ensure token exists in stock_item, fetch if missing
+                                if 'token' not in stock_item or not stock_item.get('token'):
+                                    # Try with the symbol from stock_item first, then original symbol
+                                    token = get_token(stock_item.get('symbol', symbol))
+                                    if not token:
+                                        token = get_token(symbol)
+                                    if token:
+                                        stock_item['token'] = token
+                            
+                            # Add stock to selected stocks (no need to check duplicates since we cleared the list)
+                            if stock_item:
+                                st.session_state.selected_stocks.append(stock_item)
+                                stocks_added += 1
+                        
+                        if stocks_added > 0:
+                            st.success(f"✅ Added {stocks_added} stocks from {selected_sector}")
+                            # Mark this sector as processed
+                            st.session_state.last_processed_sector = selected_sector
+                            # Clear cache to force chart regeneration
+                            st.session_state.chart_cache_key = None
+                            st.session_state.cached_chart = None
+                            st.session_state.cached_items_data = None
+                            st.session_state.cached_calculator = None
+                            # Clear precomputed charts cache
+                            active_tab_for_sector = st.session_state.get('active_tab', 'Stock')
+                            precomputed_charts_key = f"precomputed_charts_{active_tab_for_sector.lower()}"
+                            if precomputed_charts_key in st.session_state:
+                                del st.session_state[precomputed_charts_key]
+                            st.rerun()
+                        else:
+                            st.info(f"No stocks found for {selected_sector}")
+                            st.session_state.last_processed_sector = selected_sector
+                elif selected_sector == last_processed_sector:
+                    # Sector was already processed, don't show message again
+                    pass
         
         elif st.session_state.active_tab == "ETF":
             # Search box for ETFs
@@ -1883,27 +2279,29 @@ def main():
         
         st.markdown("---")
         
-        st.markdown("#### Standard JdK Implementation (Z-Score Normalization)")
+        st.markdown("#### Standard JdK Implementation (EMA Smoothing with Z-Score Normalization)")
         st.markdown("""
         **Step 1: Calculate Relative Strength**
         ```
-        RS = (Stock_Close / Benchmark_Close) × 100
+        RS = Stock_Close / Benchmark_Close
         ```
         
-        **Step 2: Calculate Simple Moving Average and Standard Deviation**
+        **Step 2: Calculate JdK Relative Strength (EMA Smoothing)**
         ```
-        SMA_RS = Mean(RS, window=14)
-        StdDev_RS = StdDev(RS, window=14)
+        JdK_RS(t) = α × RS(t) + (1-α) × JdK_RS(t-1)
+        where α = 2/(m+1), m = 14 (default, RS EMA period)
         ```
         
         **Step 3: Calculate RS-Ratio using Z-Score**
         ```
-        RS_Ratio = ((RS - SMA_RS) / StdDev_RS) × 10 + 100
+        RS_Ratio = 100 + 10 × (JdK_RS - Rolling_Mean(JdK_RS, m)) / Rolling_StdDev(JdK_RS, m)
         ```
         """)
         
-        st.markdown("**Limitation:**")
-        st.markdown("- ⚠️ Z-score normalization requires statistical interpretation and is more sensitive to volatility spikes")
+        st.markdown("**Characteristics:**")
+        st.markdown("- ✅ Uses EMA smoothing for faster response than pure SMA-based methods")
+        st.markdown("- ⚠️ Z-score normalization requires statistical interpretation")
+        st.markdown("- ⚠️ More sensitive to volatility spikes compared to ratio normalization")
         
         st.markdown("---")
         
@@ -1937,27 +2335,29 @@ def main():
         
         st.markdown("---")
         
-        st.markdown("#### Standard JdK Implementation (Z-Score Normalization)")
+        st.markdown("#### Standard JdK Implementation (ROC of Smoothed RS with Z-Score Normalization)")
         st.markdown("""
-        **Step 1: Calculate Rate of Change**
+        **Step 1: Calculate Rate of Change of JdK_RS**
         ```
-        ROC(t) = ((RS_Ratio(t) / RS_Ratio(t-period)) - 1) × 100
-        where period = 52 weeks (long-term, includes outdated data)
+        ROC(t) = (JdK_RS(t) - JdK_RS(t-k)) / JdK_RS(t-k)
+        where k = 10 (default, ROC lookback period)
         ```
         
-        **Step 2: Calculate Simple Moving Average and Standard Deviation**
+        **Step 2: Calculate JdK_ROC (EMA Smoothing of ROC)**
         ```
-        SMA_ROC = Mean(ROC, window=14)
-        StdDev_ROC = StdDev(ROC, window=14)
+        JdK_ROC(t) = α × ROC(t) + (1-α) × JdK_ROC(t-1)
+        where α = 2/(m+1), m = 14
         ```
         
         **Step 3: Calculate RS-Momentum using Z-Score**
         ```
-        RS_Momentum = ((ROC - SMA_ROC) / StdDev_ROC) × 10 + 100
+        RS_Momentum = 100 + 10 × (JdK_ROC - Rolling_Mean(JdK_ROC, m)) / Rolling_StdDev(JdK_ROC, m)
         ```
         """)
         
-        st.markdown("**Limitation:**")
+        st.markdown("**Characteristics:**")
+        st.markdown("- ✅ Calculates momentum from smoothed RS (JdK_RS) rather than RS_Ratio")
+        st.markdown("- ✅ Uses EMA smoothing for faster response")
         st.markdown("- ⚠️ Z-score bounds values by historical volatility")
         
         st.markdown("---")
