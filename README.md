@@ -1,6 +1,6 @@
 # RRG Chart Visualization: Sector Rotation Analysis
 
-A well-designed Relative Rotation Graph (RRG) visualization platform for sector rotation strategies and swing trading in the Indian equity market. This implementation uses EMA-based ratio normalization—an enhancement to the standard JdK methodology—providing earlier signal detection, intuitive interpretation, and smoother transitions, enabling early and informed investment and swing trading decisions.
+A well-designed Relative Rotation Graph (RRG) visualization platform for sector rotation strategies and swing trading in the Indian equity market. This project implements both the standard Julius de Kempenaer (JdK) RRG methodology and an EMA-based ratio–normalized variant, allowing users to freely select between the two. The enhanced variant offers earlier signal detection, intuitive interpretation, and smoother transitions, enabling early and informed investment and swing trading decisions.
 
 ---
 
