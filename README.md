@@ -1,6 +1,6 @@
 # RRG Chart Visualization: Sector Rotation Analysis
 
-This project implements a Relative Rotation Graph (RRG) computation and visualization platform for sector rotation strategies and swing trading in the Indian equity market. The Julius de Kempenaer (JdK) Relative Rotation Graph methodology, widely used by professional traders in Western markets, is not freely available for the Indian market — this gap serves as the primary motivation behind this project. The platform implements both the standard JdK RRG methodology and an enhanced EMA-based variant that provides earlier signals and smoother transitions for timely investment and swing-trading decisions.
+This project implements a Relative Rotation Graph (RRG) computation and visualization platform for sector rotation strategies and swing trading in the Indian equity market. **The Julius de Kempenaer (JdK) Relative Rotation Graph methodology, widely used by professional traders in Western markets, is not freely available for the Indian market — this gap serves as the primary motivation behind this project.** The platform implements both the standard JdK RRG methodology and an enhanced EMA-based variant that provides earlier signals and smoother transitions for timely investment and swing-trading decisions.
 
 ---
 
