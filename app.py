@@ -1935,9 +1935,21 @@ def main():
                     if results:
                         # Create options for multiselect
                         stock_options = {f"{stock['name']} ({stock['symbol']})": stock for stock in results}
+
+                        # If there is only one match, pre-select it in the multiselect
+                        options_list = list(stock_options.keys())
+                        if len(options_list) == 1:
+                            # Force session state so the new single result is shown as selected
+                            # (otherwise Streamlit keeps the previous search's selection)
+                            st.session_state["multiselect_stocks_search"] = options_list
+                            default_selection = options_list
+                        else:
+                            default_selection = []
+
                         selected_stock_keys = st.multiselect(
                             "Select Stocks",
-                            options=list(stock_options.keys()),
+                            options=options_list,
+                            default=default_selection,
                             key="multiselect_stocks_search"
                         )
                         
@@ -2207,6 +2219,29 @@ def main():
                                 st.rerun()
             else:
                 st.info("No ETFs selected")
+
+        # Manual control to redraw the RRG chart using the current Selected Items
+        redraw_col_left, redraw_col_center, redraw_col_right = st.columns([1, 2, 1])
+        with redraw_col_center:
+            if st.button("🔄 Redraw RRG", key="redraw_rrg_chart"):
+                # Clear cached chart and related data so it is regenerated
+                st.session_state.chart_cache_key = None
+                st.session_state.cached_chart = None
+                st.session_state.cached_items_data = None
+                st.session_state.cached_calculator = None
+
+                # Clear any precomputed charts cache for the active tab
+                active_tab_for_precompute = st.session_state.get('active_tab', 'Index')
+                precomputed_charts_key = f"precomputed_charts_{active_tab_for_precompute.lower()}"
+                if precomputed_charts_key in st.session_state:
+                    del st.session_state[precomputed_charts_key]
+
+                # Reset animation state
+                st.session_state.animation_date_index = None
+                st.session_state.is_animating = False
+
+                # Trigger rerun so the chart is regenerated based on current selections
+                st.rerun()
     
     # Tabs for Data Table, RRG Computation, and About
     tab1, tab2, tab3 = st.tabs(["📋 Current RRG Values", "🔢 RRG Computation", "ℹ️ About RRG Charts"])
