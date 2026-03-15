@@ -391,7 +391,6 @@ This project is for educational and personal use. Ensure compliance with AngelOn
 
 ## Acknowledgments
 
-- Enhanced RRG calculation methodology (EMA-based ratio normalization)
 - Data integration with AngelOne SmartAPI
 - Visualization framework inspired by https://github.com/An0n1mity/RRGPy
 
