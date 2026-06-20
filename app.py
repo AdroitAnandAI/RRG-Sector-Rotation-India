@@ -26,6 +26,8 @@ warnings.filterwarnings("ignore", message=".*The widget with key.*was created wi
 # Suppress Streamlit session state logging
 logging.getLogger("streamlit.runtime.state.session_state").setLevel(logging.ERROR)
 logging.getLogger("streamlit.runtime.state").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.scriptrunner").setLevel(logging.ERROR)
 
 # Suppress all UserWarnings (Streamlit uses these for widget warnings)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -37,6 +39,7 @@ load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from loaders.AngelOneLoader import AngelOneLoader
+from loaders.KiteLoader import KiteLoader
 from rrg_calculator import RRGCalculator
 from sectors import BENCHMARKS, SECTORS, SUB_SECTORS
 from token_fetcher import get_token_from_symbol
@@ -57,7 +60,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Load API credentials from environment variables
+# Default data provider ("angel" or "kite"). The UI selector below can override
+# this at runtime; the chosen value is kept in st.session_state["data_provider"].
+DATA_PROVIDER_DEFAULT = os.getenv("DATA_PROVIDER", "angel").strip().lower()
+if DATA_PROVIDER_DEFAULT not in ("angel", "kite"):
+    DATA_PROVIDER_DEFAULT = "angel"
+
+# Load AngelOne API credentials from environment variables
 API_CONFIG = {
     "API_KEY": os.getenv("API_KEY", ""),
     "CLIENT_ID": os.getenv("CLIENT_ID", ""),
@@ -66,10 +75,26 @@ API_CONFIG = {
     "EXCHANGE": os.getenv("EXCHANGE", "NSE")
 }
 
-# Validate that all required credentials are present
-if not all([API_CONFIG["API_KEY"], API_CONFIG["CLIENT_ID"], API_CONFIG["PASSWORD"], API_CONFIG["TOTP_TOKEN"]]):
-    st.error("⚠️ Missing API credentials! Please create a .env file with your AngelOne API credentials. See .env.example for reference.")
-    st.stop()
+# Load Zerodha Kite Connect credentials from environment variables
+KITE_CONFIG = {
+    "KITE_API_KEY": os.getenv("KITE_API_KEY", ""),
+    "KITE_ACCESS_TOKEN": os.getenv("KITE_ACCESS_TOKEN", ""),
+    "EXCHANGE": os.getenv("EXCHANGE", "NSE")
+}
+
+# Currently selected provider (UI selection persists in session_state across reruns)
+DATA_PROVIDER = st.session_state.get("data_provider", DATA_PROVIDER_DEFAULT)
+
+# Validate that the required credentials for the selected provider are present
+if DATA_PROVIDER == "kite":
+    if not all([KITE_CONFIG["KITE_API_KEY"], KITE_CONFIG["KITE_ACCESS_TOKEN"]]):
+        st.error("⚠️ Missing Kite credentials! Set KITE_API_KEY and KITE_ACCESS_TOKEN in your .env file. "
+                 "Run `python kite_login.py` to generate a fresh access token. See .env.example for reference.")
+        st.stop()
+else:
+    if not all([API_CONFIG["API_KEY"], API_CONFIG["CLIENT_ID"], API_CONFIG["PASSWORD"], API_CONFIG["TOTP_TOKEN"]]):
+        st.error("⚠️ Missing API credentials! Please create a .env file with your AngelOne API credentials. See .env.example for reference.")
+        st.stop()
 
 # Page configuration
 st.set_page_config(
@@ -249,25 +274,34 @@ def generate_unique_colors(count: int) -> list:
 
 
 def initialize_api_loader():
-    """Initialize AngelOne API loader with retry logic and better error handling"""
-    # Close existing loader if timeframe changed
+    """Initialize the data loader for the selected provider with retry logic."""
+    # Close existing loader if timeframe/provider changed
     if st.session_state.loader is not None:
         try:
             st.session_state.loader.close()
         except:
             pass
-    
+
+    provider = st.session_state.get('data_provider', DATA_PROVIDER_DEFAULT)
+
     # Retry logic for connection timeouts
     max_retries = 3
     retry_delay = 2  # seconds
-    
+
     for attempt in range(max_retries):
         try:
-            loader = AngelOneLoader(
-                config=API_CONFIG,
-                tf=st.session_state.get('timeframe', 'daily'),
-                period=st.session_state.get('period', 200)
-            )
+            if provider == "kite":
+                loader = KiteLoader(
+                    config=KITE_CONFIG,
+                    tf=st.session_state.get('timeframe', 'daily'),
+                    period=st.session_state.get('period', 200)
+                )
+            else:
+                loader = AngelOneLoader(
+                    config=API_CONFIG,
+                    tf=st.session_state.get('timeframe', 'daily'),
+                    period=st.session_state.get('period', 200)
+                )
             return loader
         except Exception as e:
             error_str = str(e).lower()
@@ -1180,7 +1214,31 @@ def main():
         st.markdown("<h1 style='font-size: 1.8em; margin-top: 0; margin-bottom: 0.8em; font-weight: bold;'>RRG Chart: Sectoral Rotation Analysis</h1>", unsafe_allow_html=True)
         
         st.markdown("<h4 style='font-size: 1.05em; margin-bottom: 0.3em;'>⚙️ Chart Settings</h4>", unsafe_allow_html=True)
-        
+
+        # Data Provider Selection (AngelOne / Zerodha Kite)
+        provider_labels = {"angel": "AngelOne", "kite": "Zerodha Kite"}
+        provider_options = ["angel", "kite"]
+        provider_default_index = provider_options.index(
+            st.session_state.get("data_provider", DATA_PROVIDER_DEFAULT)
+        )
+        selected_provider = st.selectbox(
+            "Data Provider",
+            provider_options,
+            index=provider_default_index,
+            format_func=lambda p: provider_labels.get(p, p),
+            key="data_provider_select"
+        )
+        previous_provider = st.session_state.get("data_provider")
+        st.session_state.data_provider = selected_provider
+        # When the provider changes, drop the loader so it is re-created and
+        # clear any cached chart computed against the old provider's data.
+        if previous_provider is not None and previous_provider != selected_provider:
+            st.session_state.loader = None
+            st.session_state.chart_cache_key = None
+            st.session_state.cached_chart = None
+            st.session_state.cached_items_data = None
+            st.session_state.cached_calculator = None
+
         # Benchmark Selection
         benchmark_options = list(BENCHMARKS.keys())
         benchmark_name = st.selectbox(
@@ -1737,7 +1795,7 @@ def main():
         if fig:
             # Use placeholder to update chart smoothly
             with st.session_state.chart_placeholder.container():
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True}, key="rrg_chart")
+                st.plotly_chart(fig, width='stretch', config={"displayModeBar": True}, key="rrg_chart")
             st.session_state.current_items_data = items_data
             st.session_state.current_calculator = calculator
         
@@ -1789,7 +1847,7 @@ def main():
             )
             fig = create_rrg_chart({}, None, calculator, tail_count=st.session_state.get('tail_count', 8))
             with st.session_state.chart_placeholder.container():
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True}, key="rrg_empty_chart")
+                st.plotly_chart(fig, width='stretch', config={"displayModeBar": True}, key="rrg_empty_chart")
     
     # RIGHT PANE - Selection Buttons and Lists
     with col_right:
@@ -1798,19 +1856,19 @@ def main():
         
         with btn_col1:
             btn_type = "primary" if st.session_state.active_tab == "Index" else "secondary"
-            if st.button("Index", key="btn_index", use_container_width=True, type=btn_type):
+            if st.button("Index", key="btn_index", width='stretch', type=btn_type):
                 st.session_state.active_tab = "Index"
                 st.rerun()
         
         with btn_col2:
             btn_type = "primary" if st.session_state.active_tab == "Stock" else "secondary"
-            if st.button("Stock", key="btn_stock", use_container_width=True, type=btn_type):
+            if st.button("Stock", key="btn_stock", width='stretch', type=btn_type):
                 st.session_state.active_tab = "Stock"
                 st.rerun()
         
         with btn_col3:
             btn_type = "primary" if st.session_state.active_tab == "ETF" else "secondary"
-            if st.button("ETF", key="btn_etf", use_container_width=True, type=btn_type):
+            if st.button("ETF", key="btn_etf", width='stretch', type=btn_type):
                 st.session_state.active_tab = "ETF"
                 # Force initialization of default ETFs before chart generation
                 # This ensures ETFs are populated before chart is generated
@@ -2273,7 +2331,7 @@ def main():
                 
             if data_rows:
                 df_display = pd.DataFrame(data_rows)
-                st.dataframe(df_display, use_container_width=True)
+                st.dataframe(df_display, width='stretch')
             else:
                 st.info("No data available. Select items to generate RRG chart.")
         else:
@@ -2407,7 +2465,7 @@ def main():
             "Trading Impact": ["Earlier entry/exit", "Faster decisions", "Current market focus", "Fewer false signals"]
         }
         
-        st.dataframe(pd.DataFrame(comparison_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(comparison_data), width='stretch', hide_index=True)
         
         st.markdown("---")
         
@@ -2424,7 +2482,7 @@ def main():
                 "Shift period for ROC calculation (short-term momentum)"
             ]
         }
-        st.dataframe(pd.DataFrame(param_enhanced), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(param_enhanced), width='stretch', hide_index=True)
         
         st.markdown("**Standard JdK:**")
         param_standard = {
@@ -2436,7 +2494,7 @@ def main():
                 "Period for ROC calculation (weeks/days)"
             ]
         }
-        st.dataframe(pd.DataFrame(param_standard), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(param_standard), width='stretch', hide_index=True)
     
     with tab3:
         st.markdown("""

@@ -8,3 +8,4 @@ python-dotenv>=1.0.0
 logzero
 websocket
 smartapi-python==1.4.1
+kiteconnect>=4.2.0
