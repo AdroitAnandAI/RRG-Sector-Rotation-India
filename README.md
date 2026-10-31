@@ -9,7 +9,7 @@ This project implements a Relative Rotation Graph (RRG) computation and visualiz
 <p align="center">
   <img src="imgs/rrg_utility_usage.gif" 
        alt="RRG Utility Usage Demo" 
-       width="100%">
+       width="50%">
 </p>
 
 ## Why RRG Charts Matter
