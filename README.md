@@ -4,8 +4,11 @@ This project implements a Relative Rotation Graph (RRG) computation and visualiz
 
 ---
 
-<video src="imgs/rrg_utility_usage.mp4" controls width="100%">
-  Project Video
+## 🎥 RRG Platform – Video Demonstration
+
+<video width="100%" controls>
+  <source src="imgs/rrg_utility_usage.webm" type="video/webm">
+  Your browser does not support WebM playback.
 </video>
 
 ## Why RRG Charts Matter
