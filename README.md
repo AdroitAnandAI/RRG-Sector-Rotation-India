@@ -4,6 +4,10 @@ This project implements a Relative Rotation Graph (RRG) computation and visualiz
 
 ---
 
+<video src="imgs/rrg_utility_usage.mp4" controls width="100%">
+  Project Video
+</video>
+
 ## Why RRG Charts Matter
 
 **Relative Rotation Graphs identifies which sectors/stocks are rotating into and out of favor** before the crowd recognizes the shift. Traditional analysis shows absolute performance, but RRG reveals **relative strength and momentum** - the two dimensions that drive sector rotation cycles.
